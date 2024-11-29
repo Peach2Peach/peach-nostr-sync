@@ -116,49 +116,6 @@ def fetch_hodlhodl_orders():
 
     return orders
 
-
-async def publish_hodlhodl_to_nostr(orders):
-    conn = sqlite3.connect(db_file_name)
-
-    last_iteration = max_iteration(conn)
-    origin = 'hodlhodl'
-
-    print(f"Iteration HodlHodl: {last_iteration + 1}")
-
-    # Initialize with coordinator Keys
-    keys = Keys.parse(os.environ.get('NOSTR_NSEC'))
-    signer = NostrSigner.keys(keys)
-    client = Client(signer)
-
-    # Add relays and connect
-    await client.add_relay("ws://localhost")
-    await client.connect()
-
-    for order in orders:
-        identifier = order.get('id')
-
-        if exists_iteration(conn, identifier, origin):
-            # keep alive existing orders
-            update_iteration(conn, identifier, origin, last_iteration + 1)
-            print(f"Iteration: {last_iteration + 1} - Order stay alive: {identifier}")
-        else:
-            # Publish new orders
-            event = parse_hodlhodl_to_nostr(order, keys, "pending")        
-            await client.send_event(event)
-
-            print(f"Iteration: {last_iteration + 1} - Nostr event sent: {event.as_json()}")
-
-            insert_order(conn, identifier, str(event.created_at().as_secs()), last_iteration + 1, origin)
-
-    # Remove expired orders
-    for orders in get_all_orders_by_iteration(conn, last_iteration):
-        event = parse_hodlhodl_to_nostr(order, keys)         
-        await client.send_event(event, "canceled")
-
-        print(f"Iteration: {last_iteration + 1} - Order expired: {identifier}")
-
-    delete_records_by_iteration(conn, last_iteration)
-
 def parse_hodlhodl_to_nostr(order, keys, status):
     identifier = order.get('id')
 
@@ -200,12 +157,53 @@ def parse_hodlhodl_to_nostr(order, keys, status):
 
     return event
 
+async def publish_to_nostr(orders, origin, parser):
+    conn = sqlite3.connect(db_file_name)
+
+    last_iteration = max_iteration(conn)
+
+    print(f"Iteration {origin}: {last_iteration + 1}")
+
+    # Initialize with coordinator Keys
+    keys = Keys.parse(os.environ.get('NOSTR_NSEC'))
+    signer = NostrSigner.keys(keys)
+    client = Client(signer)
+
+    # Add relays and connect
+    await client.add_relay("ws://localhost")
+    await client.connect()
+
+    for order in orders:
+        identifier = order.get('id')
+
+        if exists_iteration(conn, identifier, origin):
+            # keep alive existing orders
+            update_iteration(conn, identifier, origin, last_iteration + 1)
+            print(f"Iteration {origin}: {last_iteration + 1} - Order stay alive: {identifier}")
+        else:
+            # Publish new orders
+            event = parser(order, keys, "pending")        
+            await client.send_event(event)
+
+            print(f"Iteration {origin}: {last_iteration + 1} - Nostr event sent: {event.as_json()}")
+
+            insert_order(conn, identifier, str(event.created_at().as_secs()), last_iteration + 1, origin)
+
+    # Remove expired orders
+    for orders in get_all_orders_by_iteration(conn, last_iteration):
+        event = parser(order, keys)         
+        await client.send_event(event, "canceled")
+
+        print(f"Iteration {origin}: {last_iteration + 1} - Order expired: {identifier}")
+
+    delete_records_by_iteration(conn, last_iteration)
+
 async def main():
     print(f"START")
     prepare_db()
     while True:
         orders = fetch_hodlhodl_orders()
-        await publish_hodlhodl_to_nostr(orders)
+        await publish_to_nostr(orders, 'hodlhodl', parse_hodlhodl_to_nostr)
         await asyncio.sleep(300)  # Wait for 5 minutes
 
 if __name__ == "__main__":
