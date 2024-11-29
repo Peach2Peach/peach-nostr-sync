@@ -3,13 +3,86 @@ import os
 import asyncio
 import hashlib
 import uuid
+import sqlite3
 import requests
 import time
 import json
 from datetime import datetime
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, Kind, Tag
 
-def fetch_orders():
+db_file_name = './data/nostr_sync.db'
+order_expiration = 2 * 60 * 60
+
+def prepare_db():
+    conn = sqlite3.connect(db_file_name)
+
+    cursor = conn.cursor()
+    create_table_query = '''
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        identifier TEXT NOT NULL,
+        first_seen INTEGER NOT NULL,
+        iteration INTEGER NOT NULL,
+        origin TEXT NOT NULL
+    );
+    '''
+    create_index_query = '''
+    CREATE INDEX IF NOT EXISTS idx_identifier_origin ON orders (identifier, origin);
+    '''
+    cursor.execute(create_table_query)
+    cursor.execute(create_table_query)
+    conn.commit()
+    conn.close()
+
+def insert_order(conn, identifier, first_seen, iteration, origin):
+    cursor = conn.cursor()
+    insert_query = '''
+    INSERT INTO orders (identifier, first_seen, iteration, origin)
+    VALUES (?, ?, ?, ?);
+    '''
+    cursor.execute(insert_query, (identifier, first_seen, iteration, origin))
+    conn.commit()
+
+def max_iteration(conn):
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(MAX(iteration), 0) FROM orders;")
+    return cursor.fetchone()[0]
+
+def exists_iteration(conn, identifier, origin):
+    cursor = conn.cursor()
+    expiration = time.time() - order_expiration
+    
+    cursor.execute("""
+        SELECT EXISTS(
+            SELECT 1 
+            FROM orders 
+            WHERE identifier = ? 
+            AND origin = ? 
+            AND first_seen >= ?
+        );
+    """, (identifier, origin, expiration))
+    return cursor.fetchone()[0] == 1
+
+def delete_records_by_iteration(conn, iteration):
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM orders WHERE iteration <= ?;", (iteration,))
+    conn.commit()
+
+def update_iteration(conn, identifier, origin, iteration):
+    cursor = conn.cursor()
+    cursor.execute("UPDATE orders SET iteration = ? WHERE identifier = ? AND origin = ?;", (iteration, identifier, origin))
+    conn.commit()
+
+def get_all_orders_by_iteration(conn, iteration):
+    cursor = conn.cursor()
+
+    query = '''
+    SELECT * FROM orders WHERE iteration = ?;
+    '''
+    cursor.execute(query, (iteration,))
+    return cursor.fetchall()
+
+def fetch_hodlhodl_orders():
     base_url = "https://hodlhodl.com/api/v1/offers"
     offset = 0
     limit = 50
@@ -38,11 +111,19 @@ def fetch_orders():
         # Increment the offset for the next request
         offset += limit
 
+    
+    print(f"Found {len(orders)} HodlHodl orders")
+
     return orders
 
 
-async def transform_api_to_nostr(orders):
-    transformed_data = []
+async def publish_hodlhodl_to_nostr(orders):
+    conn = sqlite3.connect(db_file_name)
+
+    last_iteration = max_iteration(conn)
+    origin = 'hodlhodl'
+
+    print(f"Iteration HodlHodl: {last_iteration + 1}")
 
     # Initialize with coordinator Keys
     keys = Keys.parse(os.environ.get('NOSTR_NSEC'))
@@ -54,52 +135,77 @@ async def transform_api_to_nostr(orders):
     await client.connect()
 
     for order in orders:
-        hashed_id = hashlib.md5(
-            f"ROBOHODLHODL{order.get('id')}".encode("utf-8")
-        ).hexdigest()
+        identifier = order.get('id')
 
-        timestamp_in_24_hours = time.time() + 2 * 60 * 60
+        if exists_iteration(conn, identifier, origin):
+            # keep alive existing orders
+            update_iteration(conn, identifier, origin, last_iteration + 1)
+            print(f"Iteration: {last_iteration + 1} - Order stay alive: {identifier}")
+        else:
+            # Publish new orders
+            event = parse_hodlhodl_to_nostr(order, keys, "pending")        
+            await client.send_event(event)
 
-        payment_method_names = []
-        for instruction in order.get("payment_method_instructions", []):
-            payment_method_names.append(instruction.get("payment_method_name"))
+            print(f"Iteration: {last_iteration + 1} - Nostr event sent: {event.as_json()}")
 
-        tags = [
-            Tag.parse(["d", str(uuid.UUID(hashed_id))]),
-            Tag.parse(["name", order.get("trader").get("login")]),
-            Tag.parse(["k", order.get("side")]),
-            Tag.parse(["f", order.get("currency_code")]),
-            Tag.parse(["s", "pending"]),
-            Tag.parse(["amt", str(order.get('max_amount_sats'))]),
-            Tag.parse(["fa", str(order.get('min_amount')), str(order.get('max_amount'))]),
-            Tag.parse(["pm"] + payment_method_names),
-            Tag.parse(["source", f"https://hodlhodl.com/offers/{order.get('id')}"]),
-            Tag.parse(["rating", json.dumps({
-                "total_reviews": order.get("trader").get("trades_count"),
-                "total_rating": order.get("trader").get("rating"),
-            })]),
-            Tag.parse(["network", "mainnet"]),
-            Tag.parse(["layer", "onchain"]),
-            Tag.parse([
-                "expiration",
-                str(int(timestamp_in_24_hours))
-            ]),
-            Tag.parse(["y", "hodlhodl"]),
-            Tag.parse(["z", "order"])
-        ]
+            insert_order(conn, identifier, str(event.created_at().as_secs()), last_iteration + 1, origin)
 
-        event = EventBuilder(
-            Kind(38383),
-            "",
-            tags,
-        ).to_event(keys)
-        await client.send_event(event)
-        print(f"Nostr event sent: {event.as_json()}")
+    # Remove expired orders
+    for orders in get_all_orders_by_iteration(conn, last_iteration):
+        event = parse_hodlhodl_to_nostr(order, keys)         
+        await client.send_event(event, "canceled")
+
+        print(f"Iteration: {last_iteration + 1} - Order expired: {identifier}")
+
+    delete_records_by_iteration(conn, last_iteration)
+
+def parse_hodlhodl_to_nostr(order, keys, status):
+    identifier = order.get('id')
+
+    timestamp_in_2_hours = time.time() + order_expiration
+
+    payment_method_names = []
+    for instruction in order.get("payment_method_instructions", []):
+        payment_method_names.append(instruction.get("payment_method_name"))
+
+    tags = [
+        Tag.parse(["d", identifier]),
+        Tag.parse(["name", order.get("trader").get("login")]),
+        Tag.parse(["k", order.get("side")]),
+        Tag.parse(["f", order.get("currency_code")]),
+        Tag.parse(["s", status]),
+        Tag.parse(["amt", str(order.get('max_amount_sats'))]),
+        Tag.parse(["fa", str(order.get('min_amount')), str(order.get('max_amount'))]),
+        Tag.parse(["pm"] + payment_method_names),
+        Tag.parse(["source", f"https://hodlhodl.com/offers/{identifier}"]),
+        Tag.parse(["rating", json.dumps({
+            "total_reviews": order.get("trader").get("trades_count"),
+            "total_rating": order.get("trader").get("rating"),
+        })]),
+        Tag.parse(["network", "mainnet"]),
+        Tag.parse(["layer", "onchain"]),
+        Tag.parse([
+            "expiration",
+            str(int(timestamp_in_2_hours))
+        ]),
+        Tag.parse(["y", "hodlhodl"]),
+        Tag.parse(["z", "order"])
+    ]
+
+    event = EventBuilder(
+        Kind(38383),
+        "",
+        tags,
+    ).to_event(keys)
+
+    return event
 
 async def main():
+    print(f"START")
+    prepare_db()
     while True:
-        orders = fetch_orders()
-        await transform_api_to_nostr(orders)
+        orders = fetch_hodlhodl_orders()
+        await publish_hodlhodl_to_nostr(orders)
         await asyncio.sleep(300)  # Wait for 5 minutes
 
 if __name__ == "__main__":
