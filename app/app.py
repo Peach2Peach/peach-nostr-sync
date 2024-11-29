@@ -43,9 +43,9 @@ def insert_order(conn, identifier, first_seen, iteration, origin):
     cursor.execute(insert_query, (identifier, first_seen, iteration, origin))
     conn.commit()
 
-def max_iteration(conn):
+def max_iteration(conn, origin):
     cursor = conn.cursor()
-    cursor.execute("SELECT COALESCE(MAX(iteration), 0) FROM orders;")
+    cursor.execute("SELECT COALESCE(MAX(iteration), 0) FROM orders WHERE origin = ?;", (origin,))
     return cursor.fetchone()[0]
 
 def exists_iteration(conn, identifier, origin):
@@ -63,9 +63,9 @@ def exists_iteration(conn, identifier, origin):
     """, (identifier, origin, expiration))
     return cursor.fetchone()[0] == 1
 
-def delete_records_by_iteration(conn, iteration):
+def delete_records_by_iteration(conn, iteration, origin):
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM orders WHERE iteration <= ?;", (iteration,))
+    cursor.execute("DELETE FROM orders WHERE iteration <= ? AND origin = ?;", (iteration, origin,))
     conn.commit()
 
 def update_iteration(conn, identifier, origin, iteration):
@@ -73,13 +73,13 @@ def update_iteration(conn, identifier, origin, iteration):
     cursor.execute("UPDATE orders SET iteration = ? WHERE identifier = ? AND origin = ?;", (iteration, identifier, origin))
     conn.commit()
 
-def get_all_orders_by_iteration(conn, iteration):
+def get_all_orders_by_iteration(conn, iteration, origin):
     cursor = conn.cursor()
 
     query = '''
-    SELECT * FROM orders WHERE iteration = ?;
+    SELECT * FROM orders WHERE iteration = ? AND origin = ?;
     '''
-    cursor.execute(query, (iteration,))
+    cursor.execute(query, (iteration, origin,))
     return cursor.fetchall()
 
 def fetch_hodlhodl_orders():
@@ -160,7 +160,7 @@ def parse_hodlhodl_to_nostr(order, keys, status):
 async def publish_to_nostr(orders, origin, parser):
     conn = sqlite3.connect(db_file_name)
 
-    last_iteration = max_iteration(conn)
+    last_iteration = max_iteration(conn, origin)
 
     print(f"Iteration {origin}: {last_iteration + 1}")
 
@@ -190,20 +190,20 @@ async def publish_to_nostr(orders, origin, parser):
             insert_order(conn, identifier, str(event.created_at().as_secs()), last_iteration + 1, origin)
 
     # Remove expired orders
-    for orders in get_all_orders_by_iteration(conn, last_iteration):
+    for orders in get_all_orders_by_iteration(conn, last_iteration, origin):
         event = parser(order, keys)         
         await client.send_event(event, "canceled")
 
         print(f"Iteration {origin}: {last_iteration + 1} - Order expired: {identifier}")
 
-    delete_records_by_iteration(conn, last_iteration)
+    delete_records_by_iteration(conn, last_iteration, origin)
 
 async def main():
     print(f"START")
     prepare_db()
     while True:
-        orders = fetch_hodlhodl_orders()
-        await publish_to_nostr(orders, 'hodlhodl', parse_hodlhodl_to_nostr)
+        hodlhodl_orders = fetch_hodlhodl_orders()
+        await publish_to_nostr(hodlhodl_orders, 'hodlhodl', parse_hodlhodl_to_nostr)
         await asyncio.sleep(300)  # Wait for 5 minutes
 
 if __name__ == "__main__":
