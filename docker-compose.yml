@@ -14,7 +14,8 @@ services:
     container_name: scrapper
     restart: unless-stopped
     environment:
-      NOSTR_NSEC: ${NOSTR_NSEC}
+      HODLHODL_NOSTR_NSEC: ${HODLHODL_NOSTR_NSEC}
+      PEACH_NOSTR_NSEC: ${PEACH_NOSTR_NSEC}
     volumes:
       - ./app/data:/app/data:rw
     network_mode: service:tor
