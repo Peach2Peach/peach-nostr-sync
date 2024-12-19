@@ -1,3 +1,3 @@
 #!/bin/sh
 
-python app.py & tail -f /app/log/app.log
+python "$SCRIPT.py" & tail -f /app/log/app.log

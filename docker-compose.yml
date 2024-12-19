@@ -9,13 +9,21 @@ services:
       - ./tor:/var/lib/tor
     ports:
       - 80:80
-  scrapper:
+  scrapper_peach:
     build: ./app
-    container_name: scrapper
+    restart: unless-stopped
+    environment:
+      PEACH_NOSTR_NSEC: ${PEACH_NOSTR_NSEC}
+      SCRIPT: peach
+    volumes:
+      - ./app/data:/app/data:rw
+    network_mode: service:tor
+  scrapper_hodlhodl:
+    build: ./app
     restart: unless-stopped
     environment:
       HODLHODL_NOSTR_NSEC: ${HODLHODL_NOSTR_NSEC}
-      PEACH_NOSTR_NSEC: ${PEACH_NOSTR_NSEC}
+      SCRIPT: hodlhodl
     volumes:
       - ./app/data:/app/data:rw
     network_mode: service:tor
