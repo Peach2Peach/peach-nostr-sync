@@ -22,9 +22,7 @@ async def publish_to_nostr(orders, origin, parser, nsec):
     client = Client(signer)
 
     # Add relays and connect
-    await client.add_relay("wss://freelay.sovbit.host")
-    await client.add_relay("wss://nostrvista.aaroniumii.com")
-    await client.add_relay("wss://nostr.satstralia.com")
+    await client.add_relay("ws://localhost")
 
     await client.connect()
 
