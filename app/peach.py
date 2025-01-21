@@ -19,27 +19,20 @@ def fetch_peach_orders():
         'Content-Type': 'application/json'
     }
 
-    while True:
-        url = f"{base_url}"
-        print_log(f"Fetching {url}")
-        response = requests.get(url, headers=headers)
+    url = f"{base_url}"
+    print_log(f"Fetching {url}")
+    response = requests.get(url, headers=headers)
         
-        if response.status_code != 200:
-            print_log(f"Error fetching data: {response.status_code}")
-            break
-        
+    if response.status_code != 200:
+        print_log(f"Error fetching data: {response.status_code}")
+    else:
         data = response.json()
 
         if data.get("offers") is None:
             print_log("Failed to fetch offers.")
-            break
+        else:
+            orders.extend(data.get("offers", []))
         
-        orders.extend(data.get("offers", []))
-        
-        if len(data.get("offers", [])) < size:
-            break
-
-        page += 1
 
     print_log(f"Found {len(orders)} Peach orders")
     return orders
