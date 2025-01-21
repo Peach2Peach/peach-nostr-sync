@@ -1,28 +1,28 @@
 # peach.py
 
-import os
 import asyncio
-import requests
-import time
 import json
-from db import prepare_db, db_file_name, order_expiration
+import os
+import time
+
+import requests
+from db import db_file_name, order_expiration, prepare_db
 from logs import print_log
 from nostr import publish_to_nostr
-from nostr_sdk import Keys, EventBuilder, Kind, Tag
+from nostr_sdk import EventBuilder, Keys, Kind, Tag
+
 
 def fetch_peach_orders():
-    base_url = "https://api.peachbitcoin.com/v1/offer/search"
-    page = 0
-    size = 500
+    base_url = "https://api.peachbitcoin.com/v1/offer/search/nostr"
     orders = []
     headers = {
         'Content-Type': 'application/json'
     }
 
     while True:
-        url = f"{base_url}?page={page}&size={size}"
+        url = f"{base_url}"
         print_log(f"Fetching {url}")
-        response = requests.post(url, headers=headers)
+        response = requests.get(url, headers=headers)
         
         if response.status_code != 200:
             print_log(f"Error fetching data: {response.status_code}")
@@ -51,8 +51,8 @@ def parse_peach_to_nostr(order, keys, status):
     order_type = "sell" if order.get("type") == "ask" else "buy"
 
     rating_data = {
-        "total_reviews": order.get("user", {}).get("ratingCount", 0),
-        "total_rating": order.get("user", {}).get("rating", 0)
+        "total_reviews": order.get("ratingCount", 0),
+        "total_rating": order.get("rating", 0)
     }
 
     amount = order.get("amount", 0)
@@ -91,7 +91,7 @@ def parse_peach_to_nostr(order, keys, status):
             Tag.parse(["source", source_url]),
             Tag.parse(["network", network]),
             Tag.parse(["layer", layer]),
-            Tag.parse(["name", order.get("user", {}).get("id", "")]),
+            Tag.parse(["name", order.get("userId", "")]),
             Tag.parse(["bond", bond]),
             Tag.parse(["expiration", str(timestamp_in_2_hours)]),
             Tag.parse(["y", "peach"]),
