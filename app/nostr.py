@@ -2,9 +2,12 @@
 
 import hashlib
 import sqlite3
+
+from db import (db_file_name, delete_records_by_iteration, exists_iteration,
+                insert_order, max_iteration, update_iteration)
 from logs import print_log
-from nostr_sdk import Keys, Client, NostrSigner, NostrSdkError
-from db import insert_order, max_iteration, exists_iteration, delete_records_by_iteration, update_iteration, db_file_name
+from nostr_sdk import Client, Keys, NostrSdkError, NostrSigner
+
 
 async def publish_to_nostr(orders, origin, parser, nsec):
     conn = sqlite3.connect(db_file_name)
@@ -19,7 +22,10 @@ async def publish_to_nostr(orders, origin, parser, nsec):
     client = Client(signer)
 
     # Add relays and connect
-    await client.add_relay("ws://localhost")
+    await client.add_relay("wss://freelay.sovbit.host")
+    await client.add_relay("wss://nostrvista.aaroniumii.com")
+    await client.add_relay("wss://nostr.satstralia.com")
+
     await client.connect()
 
     print_log(f"Iteration {origin}: Checking Orders")
